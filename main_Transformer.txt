@@ -1,0 +1,69 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        return x + self.pe[:x.size(0), :]
+
+class PriceElasticityTransformer(nn.Module):
+    def __init__(self, input_dim=10, d_model=128, nhead=4, num_layers=3, output_dim=1, dropout=0.1):
+        super(PriceElasticityTransformer, self).__init__()
+        self.d_model = d_model
+        self.input_projection = nn.Linear(input_dim, d_model)
+        self.pos_encoder = PositionalEncoding(d_model)
+        
+        encoder_layers = nn.TransformerEncoderLayer(
+            d_model=d_model, 
+            nhead=nhead, 
+            dim_feedforward=256,
+            dropout=dropout,
+            activation='relu'
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
+        
+        self.output_projection = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(32, output_dim)
+        )
+        
+    def forward(self, src):
+        # Input shape: (batch_size, seq_len, input_dim)
+        batch_size, seq_len, _ = src.size()
+        
+        # Project input to model dimension
+        src = self.input_projection(src) * math.sqrt(self.d_model)
+        
+        # Add positional encoding
+        src = src.transpose(0, 1)  # (seq_len, batch_size, d_model)
+        src = self.pos_encoder(src)
+        
+        # Apply transformer encoder
+        memory = self.transformer_encoder(src)
+        
+        # Use the last time step for prediction
+        output = memory[-1, :, :]  # (batch_size, d_model)
+        
+        # Project to output dimension
+        elasticity = self.output_projection(output)
+        
+        return elasticity.squeeze(-1)  # (batch_size,)
+
+def create_model(input_dim=10, d_model=128, nhead=4, num_layers=3, output_dim=1, dropout=0.1):
+    return PriceElasticityTransformer(input_dim, d_model, nhead, num_layers, output_dim, dropout)
